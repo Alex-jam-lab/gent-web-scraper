@@ -247,3 +247,66 @@ tools_schema = [
         }
     }
 ]
+
+import asyncio
+from playwright.async_api import async_playwright
+
+
+# ==========================================
+# 🆕 优化后的动态网页滚动抓取工具（复用单例浏览器）
+# ==========================================
+async def fetch_dynamic_quotes(scroll_times: int = 2) -> str:
+    """
+    [动态网页工具] 在当前已打开的页面中，连续模拟向下滚动以加载 AJAX / 动态渲染的数据，并返回清洗后的文本内容。
+    """
+    try:
+        page = browser_ctrl.page
+        if not page:
+            return "❌ 错误: 浏览器尚未启动，请先调用 `navigate_to` 访问网址！"
+
+        logging.info(f"📜 [Tool] 开始执行动态滚动加载，共 {scroll_times} 次...")
+
+        for i in range(scroll_times):
+            # 执行页面触底滚动
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(1.5)  # 等待异步 AJAX 加载完成
+
+        # 尝试提取页面动态加载出的数据
+        quotes = await page.locator(".quote .text").all_text_contents()
+
+        if quotes:
+            return f"✅ 动态加载成功，共抓取到 {len(quotes)} 条文本数据：\n" + json.dumps(quotes, ensure_ascii=False,
+                                                                                       indent=2)
+        else:
+            # 如果不是名言页面，回退到通用的网页文本提取
+            return await extract_clean_text()
+
+    except Exception as e:
+        return f"❌ 动态内容抓取失败: {str(e)}"
+
+
+# ==========================================
+# 🔑 必须补充：将新工具注册到 Agent 的映射表与 Schema 中
+# ==========================================
+
+# 1. 更新工具字典
+TOOLS_MAP["fetch_dynamic_quotes"] = fetch_dynamic_quotes
+
+# 2. 追加 JSON Schema 供 DeepSeek 读取
+tools_schema.append({
+    "type": "function",
+    "function": {
+        "name": "fetch_dynamic_quotes",
+        "description": "用于处理动态加载/下拉刷新的网页。在当前页面连续向下滚动并获取渲染后的新内容",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scroll_times": {
+                    "type": "integer",
+                    "description": "向下滚动的次数，默认为 2 次"
+                }
+            },
+            "required": []
+        }
+    }
+})
