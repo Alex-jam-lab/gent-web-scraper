@@ -8,8 +8,15 @@ from email.mime.text import MIMEText
 from typing import Optional
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
+import requests
+from pathlib import Path
 
 import config
+
+# 确保 output 目录存在
+OUTPUT_DIR = Path("output")
+OUTPUT_DIR.mkdir(exist_ok=True)
+
 
 # 1. 浏览器单例控制器
 class BrowserController:
@@ -33,7 +40,9 @@ class BrowserController:
         if self.playwright:
             await self.playwright.stop()
 
+
 browser_ctrl = BrowserController()
+
 
 # 2. 交互工具定义
 async def navigate_to(url: str) -> str:
@@ -48,6 +57,7 @@ async def navigate_to(url: str) -> str:
     except Exception as e:
         return f"❌ 访问失败: {str(e)}"
 
+
 async def scroll_down(pixels: int = 800) -> str:
     """向下滚动页面"""
     try:
@@ -57,6 +67,7 @@ async def scroll_down(pixels: int = 800) -> str:
         return f"已向下滚动 {pixels} 像素。"
     except Exception as e:
         return f"❌ 滚动失败: {str(e)}"
+
 
 async def extract_clean_text() -> str:
     """提取页面纯文本（省 Token）"""
@@ -72,6 +83,7 @@ async def extract_clean_text() -> str:
         return f"清洗后的网页主要文本（前 3000 字）：\n{text[:3000]}"
     except Exception as e:
         return f"❌ 页面清洗提取失败: {str(e)}"
+
 
 async def extract_by_selector(selector: str, attribute: Optional[str] = None) -> str:
     """用 CSS 选择器精准提取元素"""
@@ -98,6 +110,7 @@ async def extract_by_selector(selector: str, attribute: Optional[str] = None) ->
     except Exception as e:
         return f"❌ 选择器提取错误: {str(e)}"
 
+
 async def click_element(selector: str) -> str:
     """点击元素"""
     try:
@@ -109,20 +122,21 @@ async def click_element(selector: str) -> str:
     except Exception as e:
         return f"❌ 点击失败: {str(e)}"
 
+
 async def save_data_to_file(filename: str, content: str) -> str:
     """持久化保存数据到本地 output 目录"""
     try:
         logging.info(f"💾 [Tool] 保存数据到本地: {filename}...")
-        os.makedirs("output", exist_ok=True)
-        filepath = os.path.join("output", filename)
+        filepath = OUTPUT_DIR / filename
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
         return f"✅ 数据已成功存入本地文件: {filepath}"
     except Exception as e:
         return f"❌ 保存文件失败: {str(e)}"
 
+
 async def send_email_notification(subject: str, content: str) -> str:
-    """通过 Gmail 发送邮件"""
+    """通过邮件通道发送通知"""
     if not all([config.SMTP_SERVER, config.SENDER_EMAIL, config.SENDER_PASSWORD, config.RECEIVER_EMAIL]):
         return "❌ 邮箱配置缺失，请先检查 .env 文件！"
 
@@ -157,7 +171,60 @@ async def send_email_notification(subject: str, content: str) -> str:
     except Exception as e:
         return f"❌ 邮件发送失败: {str(e)}"
 
-# 工具字典与 Schema 绑定
+
+async def fetch_dynamic_quotes(scroll_times: int = 2) -> str:
+    """
+    [动态网页工具] 在当前已打开的页面中，连续模拟向下滚动以加载 AJAX / 动态渲染的数据，并返回清洗后的文本内容。
+    """
+    try:
+        page = browser_ctrl.page
+        if not page:
+            return "❌ 错误: 浏览器尚未启动，请先调用 `navigate_to` 访问网址！"
+
+        logging.info(f"📜 [Tool] 开始执行动态滚动加载，共 {scroll_times} 次...")
+
+        for i in range(scroll_times):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(1.5)
+
+        quotes = await page.locator(".quote .text").all_text_contents()
+
+        if quotes:
+            return f"✅ 动态加载成功，共抓取到 {len(quotes)} 条文本数据：\n" + json.dumps(quotes, ensure_ascii=False,
+                                                                                       indent=2)
+        else:
+            return await extract_clean_text()
+
+    except Exception as e:
+        return f"❌ 动态内容抓取失败: {str(e)}"
+
+
+def download_media_file(url: str, filename: str) -> str:
+    """
+    [音视频下载工具] 通过直链 URL 下载音频或视频文件，并保存到本地 output 目录。
+    """
+    try:
+        logging.info(f"📥 [Tool] 正在下载媒体文件: {url}")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+
+        response = requests.get(url, headers=headers, stream=True, timeout=30)
+        response.raise_for_status()
+
+        file_path = OUTPUT_DIR / filename
+
+        with open(file_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+        return f"✅ 媒体文件下载成功！已保存至: {file_path.absolute()}"
+    except Exception as e:
+        return f"❌ 下载媒体文件失败: {str(e)}"
+
+
+# 3. 工具字典与 Schema 绑定映射
 TOOLS_MAP = {
     "navigate_to": navigate_to,
     "scroll_down": scroll_down,
@@ -166,6 +233,8 @@ TOOLS_MAP = {
     "click_element": click_element,
     "save_data_to_file": save_data_to_file,
     "send_email_notification": send_email_notification,
+    "fetch_dynamic_quotes": fetch_dynamic_quotes,
+    "download_media_file": download_media_file,
 }
 
 tools_schema = [
@@ -235,7 +304,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "send_email_notification",
-            "description": "将最终处理完成的数据通过 Gmail 推送给用户",
+            "description": "将最终处理完成的数据通过邮件推送给用户",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -245,68 +314,37 @@ tools_schema = [
                 "required": ["subject", "content"]
             }
         }
-    }
-]
-
-import asyncio
-from playwright.async_api import async_playwright
-
-
-# ==========================================
-# 🆕 优化后的动态网页滚动抓取工具（复用单例浏览器）
-# ==========================================
-async def fetch_dynamic_quotes(scroll_times: int = 2) -> str:
-    """
-    [动态网页工具] 在当前已打开的页面中，连续模拟向下滚动以加载 AJAX / 动态渲染的数据，并返回清洗后的文本内容。
-    """
-    try:
-        page = browser_ctrl.page
-        if not page:
-            return "❌ 错误: 浏览器尚未启动，请先调用 `navigate_to` 访问网址！"
-
-        logging.info(f"📜 [Tool] 开始执行动态滚动加载，共 {scroll_times} 次...")
-
-        for i in range(scroll_times):
-            # 执行页面触底滚动
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(1.5)  # 等待异步 AJAX 加载完成
-
-        # 尝试提取页面动态加载出的数据
-        quotes = await page.locator(".quote .text").all_text_contents()
-
-        if quotes:
-            return f"✅ 动态加载成功，共抓取到 {len(quotes)} 条文本数据：\n" + json.dumps(quotes, ensure_ascii=False,
-                                                                                       indent=2)
-        else:
-            # 如果不是名言页面，回退到通用的网页文本提取
-            return await extract_clean_text()
-
-    except Exception as e:
-        return f"❌ 动态内容抓取失败: {str(e)}"
-
-
-# ==========================================
-# 🔑 必须补充：将新工具注册到 Agent 的映射表与 Schema 中
-# ==========================================
-
-# 1. 更新工具字典
-TOOLS_MAP["fetch_dynamic_quotes"] = fetch_dynamic_quotes
-
-# 2. 追加 JSON Schema 供 DeepSeek 读取
-tools_schema.append({
-    "type": "function",
-    "function": {
-        "name": "fetch_dynamic_quotes",
-        "description": "用于处理动态加载/下拉刷新的网页。在当前页面连续向下滚动并获取渲染后的新内容",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "scroll_times": {
-                    "type": "integer",
-                    "description": "向下滚动的次数，默认为 2 次"
-                }
-            },
-            "required": []
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_dynamic_quotes",
+            "description": "用于处理动态加载/下拉刷新的网页。在当前页面连续向下滚动并获取渲染后的新内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scroll_times": {
+                        "type": "integer",
+                        "description": "向下滚动的次数，默认为 2 次"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "download_media_file",
+            "description": "通过音视频文件的直链 URL 下载媒体文件并保存到本地 output 目录",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "媒体文件的直链地址"},
+                    "filename": {"type": "string", "description": "保存到本地的文件名，如 video.mp4 或 audio.mp3"}
+                },
+                "required": ["url", "filename"]
+            }
         }
     }
-})
+]
