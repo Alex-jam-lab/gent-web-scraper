@@ -1,0 +1,4 @@
+google-genai
+playwright
+beautifulsoup4
+python-dotenv
