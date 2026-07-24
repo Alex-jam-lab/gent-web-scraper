@@ -8,7 +8,7 @@ from tools import browser_ctrl, TOOLS_MAP, tools_schema
 client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL)
 
 
-async def run_crawler_agent(user_prompt: str, max_steps: int = 10):
+async def run_crawler_agent(user_prompt: str, max_steps: int = 20):
     """驱动 Agent 思考与工具调用的核心调度逻辑"""
     logging.info("🚀 正在启动自动化浏览器...")
     await browser_ctrl.start(headless=False)

@@ -10,8 +10,16 @@ from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 import requests
 from pathlib import Path
-
 import config
+import yt_dlp
+import json
+import logging
+import re
+from pathlib import Path
+import requests
+
+
+
 
 # 确保 output 目录存在
 OUTPUT_DIR = Path("output")
@@ -199,30 +207,92 @@ async def fetch_dynamic_quotes(scroll_times: int = 2) -> str:
         return f"❌ 动态内容抓取失败: {str(e)}"
 
 
-def download_media_file(url: str, filename: str) -> str:
-    """
-    [音视频下载工具] 通过直链 URL 下载音频或视频文件，并保存到本地 output 目录。
-    """
-    try:
-        logging.info(f"📥 [Tool] 正在下载媒体文件: {url}")
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+import logging
+import subprocess
+from pathlib import Path
 
-        response = requests.get(url, headers=headers, stream=True, timeout=30)
-        response.raise_for_status()
+# 默认保存目录
+DEFAULT_OUTPUT_DIR = Path("output")
+DEFAULT_OUTPUT_DIR.mkdir(exist_ok=True)
 
-        file_path = OUTPUT_DIR / filename
 
-        with open(file_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+def download_bilibili_video(
+    url: str,
+    output_dir: str = None,
+    filename: str = None,
+    filename_prefix: str = None,
+    encoding: str = "avc",
+) -> str:
+  """[B站专属下载工具] Calling BBDown 内核下载视频并自动合并音视频。
 
-        return f"✅ 媒体文件下载成功！已保存至: {file_path.absolute()}"
-    except Exception as e:
-        return f"❌ 下载媒体文件失败: {str(e)}"
+  ⚠️【大模型必须严格遵守】：
+  1. 本工具【完全支持】直接写入本地任意盘符（如 E:\、D:\Videos 等）！
+  2. 如果用户 Prompt 中提及了任何保存路径（如 "保存在E盘"、"存到 D:\视频"）：
+     你【必须】将提取到的路径传入 output_dir 参数（例如 output_dir="E:\\"）。
+     绝对不允许擅自忽略 output_dir 参数，更不允许在未传入参数时向用户宣称“不支持指定E盘”！
 
+  Args:
+      url: B站视频链接 (例如 BV号 或完整 URL)
+      output_dir: 用户指定的保存路径/文件夹（如 'E:\\' 或 'E:\\Videos'）。若用户未指定路径，则保持为 None。
+      filename: [可选] 指定保存的文件名（无需带 .mp4 后缀）。
+      filename_prefix: [可选] 兼容参数，效果同 filename。
+      encoding: 视频编码格式，默认为 'avc' (H.264，兼容性最高)
+  """
+  try:
+    logging.info(f"📺 [Tool] 正在通过 BBDown 解析下载: {url}")
+
+    # 1. 解析目标保存路径
+    if output_dir and str(output_dir).strip():
+      target_dir = Path(str(output_dir).strip()).absolute()
+    else:
+      target_dir = DEFAULT_OUTPUT_DIR.absolute()
+
+    # 确保文件夹存在
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. 兼容文件名参数
+    final_filename = filename or filename_prefix
+
+    # 3. 构建 BBDown 命令
+    cmd = [
+        "BBDown.exe",
+        url,
+        "--work-dir",
+        str(target_dir),
+        "--multi-thread",
+        "--encoding-priority",
+        encoding,  # H.264 防黑屏
+        "--sub-only",
+        "false",
+    ]
+
+    if final_filename and str(final_filename).strip():
+      cmd.extend(["--file-pattern", f"{str(final_filename).strip()}"])
+
+    # 4. 执行下载
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+        errors="ignore",
+    )
+
+    log_tail = result.stdout[-300:] if result.stdout else "无日志输出"
+
+    return (
+        "✅ B 站视频下载并自动合并成功！\n"
+        f"保存绝对路径: {target_dir}\n"
+        f"文件名格式: {final_filename + '.mp4' if final_filename else '默认/视频原标题'}\n"
+        f"运行日志: {log_tail}"
+    )
+
+  except subprocess.CalledProcessError as e:
+    err_msg = e.stderr or e.stdout or "未知子进程错误"
+    return f"❌ BBDown 下载失败，错误信息:\n{err_msg}"
+  except Exception as e:
+    return f"❌ 调用 BBDown 工具异常: {str(e)}"
 
 # 3. 工具字典与 Schema 绑定映射
 TOOLS_MAP = {
@@ -234,7 +304,7 @@ TOOLS_MAP = {
     "save_data_to_file": save_data_to_file,
     "send_email_notification": send_email_notification,
     "fetch_dynamic_quotes": fetch_dynamic_quotes,
-    "download_media_file": download_media_file,
+    "download_bilibili_video": download_bilibili_video, # 保留你正在使用的 B 站下载函数
 }
 
 tools_schema = [
@@ -346,5 +416,21 @@ tools_schema = [
                 "required": ["url", "filename"]
             }
         }
+    },
+
+    {
+    "type": "function",
+    "function": {
+        "name": "download_bilibili_video",
+        "description": "通过 B 站视频的网页 URL 地址，自动下载并合并为 MP4 视频保存到本地",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "B 站视频的网页链接，如 https://www.bilibili.com/video/BV..."},
+                "filename_prefix": {"type": "string", "description": "保存文件的前缀名"}
+            },
+            "required": ["url"]
+        }
+    }
     }
 ]
